@@ -12,8 +12,9 @@ export async function renderPage(id) {
   }
 
   const roles = state.user?.roles || [];
-  const canEdit = state.user && (state.user.id === page.created_by || roles.includes('admin') || roles.includes('god') || roles.includes('manager'));
-  const canDelete = state.user && (state.user.id === page.created_by || roles.includes('admin') || roles.includes('god') || roles.includes('moderator') || roles.includes('manager') || roles.includes('eol'));
+  const canEdit = state.user && (roles.includes('admin') ||
+    (state.user.id === page.created_by && !['pending_review', 'archived'].includes(page.status)));
+  const canDelete = canEdit;
 
   const body = el('div', { class: 'article-body' });
   body.innerHTML = page.content || '<p><em>Пусто</em></p>';
@@ -28,14 +29,12 @@ export async function renderPage(id) {
   if (canEdit) {
     actions.append(el('button', { class: 'btn', onclick: () => navigate(`#/edit/${id}`) }, '✏ Редактировать'));
     
-    if (page.status !== 'published' && page.status !== 'in_progress' && hasContent) {
+    if (['draft', 'rejected'].includes(page.status) && hasContent) {
       actions.append(el('button', { class: 'btn secondary', onclick: () => submitModeration(id) }, '📤 На модерацию'));
     }
   }
 
-  if (state.user && ['author','moderator','admin', 'eol', 'manager', 'god', 'employee'].some(r => roles.includes(r))) {
-    actions.append(el('button', { class: 'btn secondary', onclick: () => exportPdf(id) }, '⬇ PDF'));
-  }
+  // Legacy PDF and comments routes are unavailable with schema v4.
   
   if (state.user) {
     actions.append(el('button', { class: 'btn secondary', onclick: () => showHistory(id) }, '🕘 История'));
@@ -47,7 +46,7 @@ export async function renderPage(id) {
       class: 'btn', 
       style: 'background: #fef2f2; color: #dc2626; border: 1px solid #fca5a5;',
       onclick: async () => {
-        if (!confirm(`Вы уверены, что хотите навсегда удалить статью "${page.title}"?`)) return;
+        if (!confirm(`Скрыть статью "${page.title}"?`)) return;
         try {
           await api('DELETE', `/api/pages/${id}`, {});
           const { state } = await import('../app.js');
@@ -58,21 +57,13 @@ export async function renderPage(id) {
     }, '🗑 Удалить'));
   }
 
-  const { renderComments } = await import('../comments.js');
-  let commentsContent;
-  try {
-    commentsContent = await renderComments(page.id);
-  } catch (e) {
-    commentsContent = el('div', { style: 'color: #dc2626; margin-top: 20px;' }, 'Не удалось загрузить комментарии.');
-  }
 
   return el('div', { class: 'card' },
     el('h1', {}, page.title),
     el('div', { style: 'color:#6b7280;font-size:13px;margin-bottom:12px;' }, `Статус: ${statusLabel(page.status)}`),
     labels.length ? el('div', { class: 'labels-chosen' }, ...labels) : null,
     actions,
-    body,
-    commentsContent
+    body
   );
 }
 

@@ -1,3 +1,4 @@
+import { state } from './app.js';
 import { highlightCode } from './highlight.js';
 
 export function createEditor(initialHTML, pageId = null) {
@@ -105,79 +106,152 @@ export function createEditor(initialHTML, pageId = null) {
   };
 
   const insertVideo = () => {
+    const MAX_SIZE = 500 * 1024 * 1024;
+
+    // Remember the insertion point before the file picker opens.
+    const selection = window.getSelection();
+    let savedRange = null;
+
+    if (selection && selection.rangeCount > 0) {
+      const candidate = selection.getRangeAt(0);
+
+      if (root.contains(candidate.commonAncestorContainer)) {
+        savedRange = candidate.cloneRange();
+      }
+    }
+
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'video/*';
-    
+    input.accept = '.mp4,.webm,video/mp4,video/webm';
+
     input.addEventListener('change', () => {
-      const file = input.files[0];
+      const file = input.files && input.files[0];
       if (!file) return;
 
+      const extension = file.name.split('.').pop().toLowerCase();
+
+      if (!['mp4', 'webm'].includes(extension)) {
+        alert('Поддерживаются только MP4 и WebM.');
+        return;
+      }
+
+      if (file.size === 0 || file.size > MAX_SIZE) {
+        alert('Размер видео должен быть от 1 байта до 500 МБ.');
+        return;
+      }
+
+      if (!state.csrf) {
+        alert('Сессия не готова. Обновите страницу и войдите снова.');
+        return;
+      }
+
       const progressWrapper = document.createElement('div');
-      progressWrapper.style.cssText = 'margin: 16px 0; padding: 16px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;';
+      progressWrapper.style.cssText =
+        'margin:16px 0;padding:16px;background:#f9fafb;' +
+        'border-radius:8px;border:1px solid #e5e7eb;';
 
       const progressText = document.createElement('div');
-      progressText.style.cssText = 'font-size: 14px; color: #374151; margin-bottom: 8px; font-weight: 500;';
-      progressText.textContent = 'Загрузка видео в БД: 0%';
+      progressText.style.cssText =
+        'font-size:14px;color:#374151;margin-bottom:8px;';
+      progressText.textContent = 'Загрузка видео: 0%';
 
       const progressBarBg = document.createElement('div');
-      progressBarBg.style.cssText = 'width: 100%; height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden;';
+      progressBarBg.style.cssText =
+        'width:100%;height:8px;background:#e5e7eb;' +
+        'border-radius:4px;overflow:hidden;';
 
       const progressBarFill = document.createElement('div');
-      progressBarFill.style.cssText = 'width: 0%; height: 100%; background: #3b82f6; transition: width 0.2s ease;';
+      progressBarFill.style.cssText =
+        'width:0%;height:100%;background:#3b82f6;';
 
       progressBarBg.appendChild(progressBarFill);
       progressWrapper.appendChild(progressText);
       progressWrapper.appendChild(progressBarBg);
-
       root.appendChild(progressWrapper);
-      progressWrapper.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
       const formData = new FormData();
       formData.append('video', file);
 
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/media/upload', true);
+      xhr.open('POST', '/api/videos/upload', true);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader('X-CSRF-Token', state.csrf);
 
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const percentComplete = Math.round((e.loaded / e.total) * 100);
-          progressText.textContent = `Загрузка видео в БД: ${percentComplete}%`;
-          progressBarFill.style.width = percentComplete + '%';
-        }
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable) return;
+
+        const percent = Math.round(
+          event.loaded / event.total * 100
+        );
+
+        progressText.textContent = `Загрузка видео: ${percent}%`;
+        progressBarFill.style.width = percent + '%';
       };
 
       xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          progressText.textContent = 'Вставка в статью...';
-          setTimeout(() => {
-            progressWrapper.remove();
-            const data = JSON.parse(xhr.responseText);
-            
-            const videoContainer = document.createElement('div');
-            videoContainer.style.margin = '16px 0';
-
-            const videoEl = document.createElement('video');
-            videoEl.controls = true;
-            videoEl.style.maxWidth = '100%';
-            videoEl.style.borderRadius = '8px';
-            videoEl.src = data.url;
-
-            videoContainer.appendChild(videoEl);
-            root.focus();
-            const range = window.getSelection().getRangeAt(0);
-            range.deleteContents();
-            range.insertNode(videoContainer);
-            
-            const p = document.createElement('p');
-            p.innerHTML = '<br>';
-            videoContainer.after(p);
-            
-          }, 300);
-        } else {
+        if (xhr.status < 200 || xhr.status >= 300) {
           progressWrapper.remove();
-          alert('Ошибка загрузки: ' + xhr.statusText);
+
+          let message = `Ошибка загрузки (HTTP ${xhr.status})`;
+
+          try {
+            const error = JSON.parse(xhr.responseText);
+            if (error.error) message += ': ' + error.error;
+          } catch (_) {}
+
+          alert(message);
+          return;
         }
+
+        let data;
+
+        try {
+          data = JSON.parse(xhr.responseText);
+
+          if (!data.url ||
+              !/^\/api\/videos\/[0-9a-f-]{36}$/i.test(data.url)) {
+            throw new Error('Invalid video URL');
+          }
+        } catch (_) {
+          progressWrapper.remove();
+          alert('Сервер вернул некорректный ответ.');
+          return;
+        }
+
+        progressWrapper.remove();
+
+        const video = document.createElement('video');
+        video.controls = true;
+        video.preload = 'metadata';
+        video.src = data.url;
+        video.style.maxWidth = '100%';
+
+        const container = document.createElement('div');
+        container.appendChild(video);
+
+        const paragraph = document.createElement('p');
+        paragraph.appendChild(document.createElement('br'));
+
+        root.focus();
+
+        if (savedRange && root.contains(savedRange.commonAncestorContainer)) {
+          savedRange.deleteContents();
+          savedRange.insertNode(container);
+        } else {
+          root.appendChild(container);
+        }
+
+        container.after(paragraph);
+
+        const range = document.createRange();
+        range.selectNodeContents(paragraph);
+        range.collapse(true);
+
+        const currentSelection = window.getSelection();
+        currentSelection.removeAllRanges();
+        currentSelection.addRange(range);
+
+        root.dispatchEvent(new Event('input', { bubbles: true }));
       };
 
       xhr.onerror = () => {
@@ -185,13 +259,17 @@ export function createEditor(initialHTML, pageId = null) {
         alert('Ошибка сети при загрузке видео.');
       };
 
+      xhr.onabort = () => {
+        progressWrapper.remove();
+      };
+
       xhr.send(formData);
     });
+
     input.click();
   };
 
-  btn('🖼', 'Изображение', insertImage);
-  btn('🎬', 'Видео', insertVideo);
+  // Media uploads are disabled until encrypted v4 attachment storage is implemented.
   btn('</>', 'Блок кода', insertCode);
 
   return {

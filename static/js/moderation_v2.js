@@ -1,22 +1,33 @@
-async function api(method, url, body) {
-  const me = await fetch('/api/me').then(r => r.json());
-  const res = await fetch(url, {
-    method, credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify({ ...body, csrf: me.user?.csrf }) : undefined,
-  });
-  if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-  return res.json();
+import { api } from './app.js';
+
+async function request(method, url, body) {
+  const result = await api(method, url, body);
+  // The shared transport still returns legacy 404 values instead of throwing.
+  if (result?.error) throw Object.assign(new Error(result.error), result);
+  return result;
+}
+
+function errorMessage(error) {
+  if (error.status === 409) return 'Заявка устарела: версия статьи или статус проверки изменились. Обновите очередь.';
+  if (error.code === 'self_review') return 'Нельзя проверять собственную статью. Администратор может только одобрить её.';
+  if (error.status === 403) return 'Нет доступа к модерации этой статьи или сессия истекла.';
+  if (error.status === 401) return 'Войдите в систему повторно.';
+  if (error.status === 404) return 'Заявка или очередь не найдена. Обновите страницу.';
+  return 'Не удалось выполнить запрос. Попробуйте обновить очередь.';
 }
 
 export async function render() {
-  const me = await fetch('/api/me').then(r => r.json());
-  const queue = await fetch('/api/moderation/queue').then(r => r.json());
-
   const wrap = document.createElement('div');
   wrap.className = 'card';
   wrap.style.padding = '32px';
   wrap.append(Object.assign(document.createElement('h1'), { textContent: 'CRM: очередь модерации' }));
+
+  let queue;
+  try { queue = await request('GET', '/api/moderation/queue'); }
+  catch (error) {
+    wrap.append(Object.assign(document.createElement('p'), { textContent: errorMessage(error), role: 'alert' }));
+    return wrap;
+  }
 
   if (queue.length === 0) {
     wrap.append(Object.assign(document.createElement('p'), { textContent: 'Очередь пуста. Все статьи проверены!', style: 'color: #6b7280; margin-top: 16px;' }));
@@ -55,53 +66,35 @@ export async function render() {
     const td = tr.lastElementChild;
 
     if (row.status === 'pending') {
-      const take = document.createElement('button');
-      take.className = 'btn';
-      take.textContent = 'Взять в работу';
-      take.style.marginRight = '8px';
-      take.addEventListener('click', async () => {
-        try { await api('POST', `/api/moderation/take/${row.id}`, {}); refresh(); }
-        catch (e) { alert(e.message); }
-      });
-      td.append(take);
-    }
-
-    if (row.status === 'in_progress' && me.user?.id === row.assigned_moderator_id) {
       const ok = document.createElement('button');
       ok.className = 'btn';
       ok.textContent = 'Одобрить';
       ok.style.marginRight = '8px';
+      ok.disabled = row.can_approve !== true;
+      if (ok.disabled && row.reason === 'self_review') ok.title = 'Нельзя одобрить собственную статью без роли администратора.';
       ok.addEventListener('click', async () => {
-        try { await api('POST', `/api/moderation/decide/${row.id}`, { action: 'approve' }); refresh(); }
-        catch (e) { alert(e.message); }
+        if (ok.disabled) return;
+        try { await request('POST', `/api/moderation/decide/${row.id}`, { action: 'approve' }); refresh(); }
+        catch (e) { if (e.status === 409) { ok.disabled = true; no.disabled = true; } alert(errorMessage(e)); }
       });
       
       const no = document.createElement('button');
       no.className = 'btn danger';
       no.textContent = 'Отклонить';
       no.style.marginRight = '8px';
+      no.disabled = row.can_reject !== true;
+      if (no.disabled && row.reason === 'self_review') no.title = 'Нельзя отклонить собственную статью.';
       no.addEventListener('click', async () => {
+        if (no.disabled) return;
         const comment = prompt('Причина отклонения (обязательно):');
         if (!comment) return;
-        try { await api('POST', `/api/moderation/decide/${row.id}`, { action: 'reject', comment }); refresh(); }
-        catch (e) { alert(e.message); }
+        try { await request('POST', `/api/moderation/decide/${row.id}`, { action: 'reject', comment }); refresh(); }
+        catch (e) { if (e.status === 409) { ok.disabled = true; no.disabled = true; } alert(errorMessage(e)); }
       });
       td.append(ok, no);
     }
 
-    // КНОПКА УДАЛЕНИЯ (ДОСТУПНА ВСЕМ, КТО В ОЧЕРЕДИ)
-    const del = document.createElement('button');
-    del.className = 'btn secondary';
-    del.style.cssText = 'padding: 6px 10px; color: #dc2626; border-color: #fca5a5; background: #fef2f2;';
-    del.textContent = '🗑 Удалить';
-    del.addEventListener('click', async () => {
-      if (!confirm(`Вы уверены, что хотите навсегда удалить статью "${row.title}"?`)) return;
-      try {
-        await api('DELETE', `/api/pages/${row.page_id}`, {});
-        refresh();
-      } catch (e) { alert(e.message); }
-    });
-    td.append(del);
+    // Page deletion remains available to the author or admin on the page view.
 
     tbody.append(tr);
   });

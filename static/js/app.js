@@ -1,3 +1,8 @@
+import {
+  initializeVideoPlayers,
+  destroyVideoPlayers
+} from './video_player.js';
+
 export const state = {
   user: null,
   csrf: null,
@@ -38,10 +43,21 @@ export async function api(method, url, body) {
   if (res.status === 404) return { error: 'Not Found', status: 404 };
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || 'Ошибка сервера');
+    const error = new Error(err.error || 'Ошибка сервера');
+    error.status = res.status;
+    error.code = err.code;
+    error.details = err.details;
+    throw error;
   }
   const ct = res.headers.get('content-type') || '';
   return ct.includes('application/json') ? res.json() : res.blob();
+}
+
+export async function loadTree() {
+  if (!state.user) return;
+  state.cache.tree = await api('GET', '/api/tree');
+  state.cache.spaces = await api('GET', '/api/admin/spaces');
+  renderTree();
 }
 
 export async function loadMe() {
@@ -62,11 +78,10 @@ export function renderProfile() {
   p.innerHTML = '';
   p.style.position = 'relative';
   if (state.user) {
-    const avatarHtml = state.avatarUrl 
-      ? `<img src="${state.avatarUrl}" style="width:32px; height:32px; border-radius:50%; object-fit:cover; border: 1px solid #475569;">`
-      : `<div style="width:32px; height:32px; border-radius:50%; background:#3b82f6; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:14px;">${state.user.full_name.charAt(0).toUpperCase()}</div>`;
+    const avatar = el('div', { style: 'width:32px; height:32px; border-radius:50%; background:#3b82f6; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:14px;' },
+      (state.user.full_name || '?').charAt(0).toUpperCase());
     const profileBtn = el('div', { style: 'display:flex; align-items:center; gap:8px; cursor:pointer; padding:4px 8px; border-radius:6px;' },
-      el('div', { html: avatarHtml }),
+      avatar,
       el('span', { style: 'font-size:14px; font-weight:500; color:#f8fafc;' }, state.user.full_name),
       el('span', { style: 'font-size:10px; color:#94a3b8;' }, '▼')
     );
@@ -75,7 +90,7 @@ export function renderProfile() {
         el('div', { style: 'font-weight:600; font-size:14px; color:#111827;' }, state.user.full_name),
         el('div', { style: 'font-size:12px; color:#6b7280;' }, `@${state.user.login}`)
       ),
-      el('div', { style: 'padding:8px 16px; font-size:14px; cursor:pointer;', onclick: () => { navigate('#/profile'); dropdown.style.display = 'none'; } }, '👤 Личный кабинет'),
+      el('div', { style: 'padding:10px 16px; font-size:14px; cursor:pointer; color:#1f2937; font-weight:500; border-radius:6px;', onclick: () => { navigate('#/profile'); dropdown.style.display = 'none'; } }, '👤 Личный кабинет'),
       el('div', { style: 'padding:8px 16px; font-size:14px; cursor:pointer; color:#dc2626;', onclick: logout }, '🚪 Выйти')
     );
     profileBtn.addEventListener('click', (e) => { e.stopPropagation(); dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none'; });
@@ -200,12 +215,27 @@ function renderTree() {
 }
 
 let isRendering = false;
+let renderQueued = false;
 export async function render() {
-  if (isRendering) return;
+  if (isRendering) {
+    renderQueued = true;
+    return;
+  }
   isRendering = true;
+  renderQueued = false;
+  const hash = location.hash || '#/';
+  const user = state.user;
+  const isCurrent = () => !renderQueued && hash === (location.hash || '#/') && user === state.user;
 
   try {
     const main = $('#main');
+    // Async views may finish after navigation/logout. Never attach their stale DOM.
+    const commit = view => {
+      if (!isCurrent()) return;
+      main.append(view);
+      initializeVideoPlayers(view);
+    };
+    destroyVideoPlayers();
     main.innerHTML = '';
     main.style.padding = '32px 40px';
     
@@ -216,7 +246,7 @@ export async function render() {
       document.querySelector('.layout').style.height = 'calc(100vh - 60px)';
       document.querySelector('.layout').style.background = '#f9fafb';
       const { renderAuth } = await import('./views/auth.js');
-      main.append(await renderAuth());
+      commit(await renderAuth());
       return;
     }
 
@@ -226,40 +256,40 @@ export async function render() {
     document.querySelector('.layout').style.height = 'calc(100vh - 60px)';
     document.querySelector('.layout').style.background = '#f9fafb';
 
-    const hash = location.hash || '#/';
+    document.querySelectorAll('.sidebar-nav [data-section]').forEach(item => {
+      const section = hash.startsWith('#/competenc') || hash.startsWith('#/testing') ? 'competencies' :
+        hash === '#/drafts' ? 'drafts' : hash === '#/' || hash.startsWith('#/page/') ? 'kb' : '';
+      item.classList.toggle('active', item.dataset.section === section);
+    });
 
-    if (!state.cache.tree) {
-      state.cache.tree = await api('GET', '/api/tree');
-    }
-    if (!state.cache.spaces) {
-      state.cache.spaces = await api('GET', '/api/admin/spaces');
-    }
+    if (!state.cache.tree || !state.cache.spaces) await loadTree();
+    if (!isCurrent()) return;
     
     renderTree();
 
     if (hash === '#/' || hash === '') {
       state.section = 'kb';
       const { renderWelcome } = await import('./views/welcome.js');
-      main.append(await renderWelcome());
+      commit(await renderWelcome());
       return;
     }
     if (hash === '#/drafts') {
       state.section = 'drafts';
       const { renderDrafts } = await import('./views/drafts.js');
-      main.append(await renderDrafts());
+      commit(await renderDrafts());
       return;
     }
     if (hash.startsWith('#/page/')) {
       const id = hash.split('/')[2];
       state.currentPage = id;
       const { renderPage } = await import('./views/page.js');
-      main.append(await renderPage(id));
+      commit(await renderPage(id));
       return;
     }
     if (hash === '#/new') { 
       main.style.padding = '0'; 
       const { renderEditor } = await import('./views/editor.js');
-      main.append(await renderEditor(null)); 
+      commit(await renderEditor(null));
       return; 
     }
     if (hash.startsWith('#/edit/')) {
@@ -267,38 +297,52 @@ export async function render() {
       const id = hash.split('/')[2];
       const existing = await api('GET', `/api/pages/${id}`);
       const { renderEditor } = await import('./views/editor.js');
-      main.append(await renderEditor(existing));
+      commit(await renderEditor(existing));
       return;
     }
     if (hash === '#/profile') {
       const { renderProfilePage } = await import('./views/profile.js');
-      main.append(await renderProfilePage());
+      commit(await renderProfilePage());
+      return;
+    }
+    if (hash === '#/competence' || hash === '#/competencies' || hash.startsWith('#/competencies?')) {
+      const { renderCompetencies } = await import('./views/competencies.js');
+      commit(await renderCompetencies());
+      return;
+    }
+    if (hash === '#/testing' || hash.startsWith('#/testing?')) {
+      const { renderTesting } = await import('./views/testing.js');
+      commit(await renderTesting());
       return;
     }
     if (hash === '#/admin') {
       const roles = state.user.roles || [];
-      const isGod = roles.includes('god') || roles.includes('admin') || state.user.login === 'admin' || roles.includes('eol') || roles.includes('manager');
-      if (!isGod) {
-        main.append(el('div', { class: 'card' }, 'Доступ запрещен.'));
+       if (!roles.includes('admin')) {
+         commit(el('div', { class: 'card' }, 'Доступ запрещен.'));
         return;
       }
       try {
         const { renderAdmin } = await import('./views/admin.js');
-        main.append(await renderAdmin());
+        commit(await renderAdmin());
       } catch (e) {
-        main.append(el('div', { class: 'card', style: 'color:red;' }, 'Ошибка: ' + e.message));
+        commit(el('div', { class: 'card', style: 'color:red;' }, 'Ошибка: ' + e.message));
       }
       return;
     }
     if (hash === '#/moderation') {
       const mod = await import('./moderation_v2.js');
-      main.append(await mod.render());
+      commit(await mod.render());
       return;
     }
     
-    main.append(el('div', { class: 'card' }, 'Страница не найдена'));
+    commit(el('div', { class: 'card' }, 'Страница не найдена'));
+  } catch (error) {
+    if (isCurrent()) throw error;
   } finally {
+    const rerender = !isCurrent();
     isRendering = false;
+    // Coalesce rapid hashchanges and same-route refreshes into the latest route.
+    if (rerender) await render();
   }
 }
 

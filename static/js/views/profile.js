@@ -7,7 +7,8 @@ export async function renderProfilePage() {
   
   const roleNames = {
     'god': 'Боги', 'eol': 'ЕОЛ', 'manager': 'Руководители', 'employee': 'Сотрудники',
-    'admin': 'Администратор', 'moderator': 'Модератор', 'author': 'Автор', 'reader': 'Читатель'
+    'admin': 'Администратор', 'moderator': 'Модератор', 'author': 'Автор', 'reader': 'Читатель',
+    'kk_responsible': 'Ответственный за КК'
   };
 
   // --- АВАТАРКА ---
@@ -67,7 +68,7 @@ export async function renderProfilePage() {
   const competenceCard = el('div', { class: 'card' },
     el('h2', {}, '📋 Карта компетенций'),
     el('p', { style: 'color:#6b7280; margin-bottom:16px;' }, 'Матрица навыков и оценка сотрудников.'),
-    el('button', { class: 'btn secondary', onclick: () => location.hash = '#/competence' }, 'Открыть карту')
+    el('button', { class: 'btn secondary', onclick: () => location.hash = '#/competencies' }, 'Открыть карту')
   );
 
   const roleCard = el('div', { class: 'card', style: 'background:#f8fafc; border:none;' },

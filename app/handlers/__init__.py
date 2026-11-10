@@ -1,4 +1,5 @@
 def register(r):
-    from . import admin, pages, comments, search, labels, history, export_pdf, attachments, moderation, media
-    for mod in (admin, pages, comments, search, labels, history, export_pdf, attachments, moderation, media):
+    from . import admin, pages, search, labels, history, moderation, competencies, testing, videos
+    # Legacy filesystem media/PDF and comments are incompatible with schema v4.
+    for mod in (admin, pages, search, labels, history, moderation, competencies, testing, videos):
         mod.register(r)

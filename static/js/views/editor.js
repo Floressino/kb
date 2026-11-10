@@ -15,32 +15,88 @@ export async function renderEditor(existing) {
   main.style.background = '#fff';
 
   // --- НАСТРОЙКИ ---
-  const spacePathInput = el('input', {
-    value: existing ? spaces.find(s => s.id === existing.space_id)?.name : (spaces[0]?.name || 'Общее'),
-    placeholder: 'Отдел',
-    style: 'margin-bottom: 10px;',
-    list: 'spaces-list'
-  });
-  const spacesDatalist = el('datalist', { id: 'spaces-list' }, ...spaces.map(s => el('option', { value: s.name })));
+  const spacePathInput = el('select', { style: 'margin-bottom: 10px;' },
+    ...spaces.map(s => el('option', { value: s.id }, s.name)));
+  if (existing) spacePathInput.value = existing.space_id;
 
+  // Synchronize available parents with the selected space.
   const parentSelect = el('select', {
     style: 'margin-bottom: 10px;'
-  },
-    el('option', { value: '' }, '— Корень отдела —'),
-    ...tree.filter(p => !existing || p.id !== existing.id).map(p => el('option', { value: p.id }, p.title))
-  );
-  if (existing && existing.parent_id) parentSelect.value = existing.parent_id;
+  });
+
+  const refreshParents = (preferredParent = null) => {
+    const spaceId = spacePathInput.value;
+
+    const availableParents = tree.filter(p =>
+      p.space_id === spaceId &&
+      (!existing || p.id !== existing.id)
+    );
+
+    parentSelect.replaceChildren(
+      el('option', { value: '' }, '— Корень пространства —'),
+      ...availableParents.map(p =>
+        el('option', { value: p.id }, p.title)
+      )
+    );
+
+    if (preferredParent &&
+        availableParents.some(p => p.id === preferredParent)) {
+      parentSelect.value = preferredParent;
+    } else {
+      parentSelect.value = '';
+    }
+  };
+
+  refreshParents(existing?.parent_id || null);
+
+  // Do not silently remove an existing parent that is not in the tree.
+  if (existing?.parent_id &&
+      !tree.some(p =>
+        p.id === existing.parent_id &&
+        p.space_id === existing.space_id
+      )) {
+    parentSelect.add(
+      el('option', {
+        value: existing.parent_id
+      }, 'Текущий родитель (недоступен в списке)')
+    );
+    parentSelect.value = existing.parent_id;
+  }
+
+  if (existing) {
+    spacePathInput.disabled = true;
+  } else {
+    spacePathInput.addEventListener('change', () => {
+      refreshParents();
+    });
+  }
 
   // --- ЛОГИКА СОХРАНЕНИЯ ---
   const save = async (isModeration = false) => {
-    const spacePath = spacePathInput.value.trim();
-    if (!spacePath) return alert('Укажите отдел (пространство)');
+    const spaceId = spacePathInput.value;
+    if (!spaceId) return alert('Выберите пространство');
+
+    const selectedParent = parentSelect.value || null;
+
+    if (selectedParent &&
+        selectedParent !== existing?.parent_id &&
+        !tree.some(p =>
+          p.id === selectedParent &&
+          p.space_id === spaceId &&
+          (!existing || p.id !== existing.id)
+        )) {
+      return alert(
+        'Выбранная родительская статья не принадлежит этому пространству. ' +
+        'Выберите родителя заново.'
+      );
+    }
+
     
     const payload = {
       title: titleInput.value,
       content: editor.getHTML(),
-      space_path: spacePath,
-      parent_id: parentSelect.value ? parentSelect.value : null,
+      space_id: spaceId,
+      parent_id: selectedParent,
       labels: labelsField.getLabels(),
     };
 
@@ -62,7 +118,9 @@ export async function renderEditor(existing) {
       }
 
       // Обновляем дерево и переходим на страницу
-      const { loadTree } = await import('./tree.js');
+      state.cache.tree = null;
+      state.cache.spaces = null;
+      const { loadTree } = await import('../app.js');
       await loadTree();
       navigate(`#/page/${pageId}`);
       
@@ -84,7 +142,7 @@ export async function renderEditor(existing) {
     const box = el('div', { class: 'modal', style: 'max-width: 500px;' },
       el('button', { class: 'close', onclick: () => modal.remove() }, '×'),
       el('h2', {}, 'Настройки статьи'),
-      el('label', {}, 'Пространство (Отдел):'), spacePathInput, spacesDatalist,
+      el('label', {}, 'Пространство:'), spacePathInput,
       el('label', {}, 'Вложить в папку:'), parentSelect,
       el('label', {}, 'Метки:'), labelsField.node
     );
@@ -137,10 +195,9 @@ export async function renderEditor(existing) {
     ),
     el('div', { class: 'card' },
       el('div', { class: 'sidebar-section-title' }, '⚡ Быстрые действия'),
-      el('div', { class: 'quick-action-btn', onclick: () => editor.insertImage() }, '🖼 Добавить изображение'),
-      el('div', { class: 'quick-action-btn', onclick: () => editor.insertVideo() }, '🎬 Добавить видео'), 
       el('div', { class: 'quick-action-btn', onclick: () => editor.insertTable() }, '📊 Вставить таблицу'),
-      el('div', { class: 'quick-action-btn', onclick: () => editor.insertCode() }, '💻 Блок кода')
+      el('div', { class: 'quick-action-btn', onclick: () => editor.insertCode() }, '💻 Блок кода'),
+      el('div', { class: 'quick-action-btn', onclick: () => editor.insertVideo() }, '🎬 Загрузить видео')
     )
   );
 

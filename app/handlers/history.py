@@ -1,40 +1,36 @@
 import json
-from .. import db, rbac, audit
+from .. import db, access, audit, content as safe_content
 from ..utils import json_response
+from .pages import _page, valid
+
 
 def register(r):
-    r.route("GET", "/api/pages/<pid>/history")(list_hist)
-    r.route("POST", "/api/pages/<pid>/restore/<vid>")(restore)
+    r.route('GET', '/api/pages/<pid>/history')(list_hist)
+    r.route('POST', '/api/pages/<pid>/restore/<vid>')(restore)
+
 
 def list_hist(req, pid):
-    rows = db.query(
-        "SELECT id, version, editor_id, created_at FROM page_revisions WHERE page_id=%s::uuid ORDER BY version DESC",
-        (pid,),
-    )
-    return json_response(rows)
+    p = _page(pid)
+    if not access.page(req.user, p):
+        return json_response({'error': 'not found'}, '404 Not Found')
+    return json_response(db.query('SELECT id,version,editor_id,created_at FROM page_revisions WHERE page_id=%s ORDER BY version DESC', (pid,)))
+
 
 def restore(req, pid, vid):
-    rbac.require(req.user, "author", "admin")
-    data = req.json()
-    if data.get("csrf") != req.user["csrf_token"]: raise PermissionError("CSRF")
-    
-    v = db.query(
-        """SELECT id, title, content->>'html' AS html_content 
-           FROM page_revisions WHERE id=%s::uuid AND page_id=%s::uuid""", 
-        (vid, pid), one=True
-    )
-    if not v: raise PermissionError("Версия не найдена")
-    
-    p = db.query("SELECT current_version FROM pages WHERE id=%s::uuid", (pid,), one=True)
-    new_version = p["current_version"] + 1
-
-    db.execute("UPDATE pages SET title=%s, current_version=%s, updated_by=%s::uuid, updated_at=now() WHERE id=%s::uuid",
-               (v["title"], new_version, req.user["user_id"], pid))
-    
-    db.execute(
-        "INSERT INTO page_revisions(page_id, version, title, content, editor_id) VALUES(%s::uuid, %s, %s, %s::jsonb, %s::uuid)",
-        (pid, new_version, v["title"], json.dumps({"html": v["html_content"] or ""}), req.user["user_id"])
-    )
-    
-    audit.log(req.user["user_id"], "page.restore", "page", str(pid), {"restored_from_version": v["version"]})
-    return json_response({"ok": True})
+    access.csrf(req)
+    if not valid(vid):
+        return json_response({'error': 'not found'}, '404 Not Found')
+    with db.transaction() as conn:
+        p = _page(pid, conn, lock=True)
+        if not access.page(req.user, p, write=True, conn=conn):
+            raise PermissionError('Page access denied')
+        v = db.query('SELECT * FROM page_revisions WHERE page_id=%s AND id=%s', (pid, vid), one=True, conn=conn)
+        if not v:
+            return json_response({'error': 'not found'}, '404 Not Found')
+        number = p['current_version'] + 1
+        db.execute("UPDATE pages SET title=%s,current_version=%s,status='draft',updated_by=%s,updated_at=now() WHERE id=%s",
+                   (v['title'], number, req.user['user_id'], pid), conn)
+        db.execute('INSERT INTO page_revisions(page_id,version,title,content,editor_id) VALUES(%s,%s,%s,%s::jsonb,%s)',
+                   (pid, number, v['title'], json.dumps({'html': safe_content.clean(v['content'].get('html', ''))}), req.user['user_id']), conn)
+        audit.log(req.user['user_id'], 'page.restore', 'page', pid, {'from': str(vid)}, conn)
+    return json_response({'ok': True})

@@ -33,7 +33,9 @@ export async function renderAuth() {
             state.csrf = data.csrf;
             await loadMe();
             
-            const { loadTree } = await import('./tree.js');
+            state.cache.tree = null;
+            state.cache.spaces = null;
+            const { loadTree } = await import('../app.js');
             await loadTree();
             
             render();
